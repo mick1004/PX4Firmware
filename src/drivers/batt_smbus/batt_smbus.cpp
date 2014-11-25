@@ -278,7 +278,7 @@ BATT_SMBUS::read_reg(uint8_t reg, uint16_t &val)
 		retry_count++;
 	}
 	if (ret == OK) {
-		val = (uint16_t)buff[1] << 8 || (uint16_t)buff[0];
+		val = (uint16_t)buff[1] << 8 | (uint16_t)buff[0];
 	}
 
 	// return success or failure
