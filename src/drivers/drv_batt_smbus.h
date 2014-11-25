@@ -71,4 +71,4 @@
 #define BATT_SMBUS_READ_CELL_VOLTAGE	_BATT_SMBUS_IOC(5)
 
 /* structure to hold individual cell voltages */
-typedef unsigned int batt_smbus_cell_voltage[BATT_SMBUS_MAX_CELLS];
+typedef uint16_t batt_smbus_cell_voltage[BATT_SMBUS_MAX_CELLS];

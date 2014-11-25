@@ -76,15 +76,13 @@
 class BATT_SMBUS : public device::I2C
 {
 public:
-	BATT_SMBUS(int bus = PX4_I2C_BUS_EXPANSION, int batt_smbus = BATT_SMBUS_ADDR);
+	BATT_SMBUS(int bus = PX4_I2C_BUS_EXPANSION, uint16_t batt_smbus_addr = BATT_SMBUS_ADDR);
 	virtual ~BATT_SMBUS();
 
 	virtual int		init();
 	virtual int		probe();
-	virtual int		info();
+	virtual int		test();
 	virtual int		ioctl(struct file *filp, int cmd, unsigned long arg);
-
-private:
 
 	// read battery information, updates internal variables and returns OK if successful
 	int				get_voltage();
@@ -93,12 +91,17 @@ private:
 	int				get_design_voltage();
 	int				get_cell_voltage();
 
+private:
+
 	// internal variables
-	unsigned int		_voltage;	// voltage in millivolts
-	unsigned int		_current;	// current in milliamps
-	unsigned int		_capacity;	// total pack capacity in mAh
-	unsigned int		_design_voltage;	// maximum designed voltage of battery
+	uint16_t			_voltage;	// voltage in millivolts
+	uint16_t 			_current;	// current in milliamps
+	uint16_t			_capacity;	// total pack capacity in mAh
+	uint16_t			_design_voltage;	// maximum designed voltage of battery
 	batt_smbus_cell_voltage	_cell_voltage;	// individual cell voltages
+
+	// read_reg - read a word from specified register
+	int				read_reg(uint8_t reg, uint16_t &val);
 };
 
 /* for now, we only support one BATT_SMBUS */
@@ -112,8 +115,8 @@ void batt_smbus_usage();
 extern "C" __EXPORT int batt_smbus_main(int argc, char *argv[]);
 
 // constructor
-BATT_SMBUS::BATT_SMBUS(int bus, int batt_smbus) :
-	I2C("batt_smbus", BATT_SMBUS_DEVICE_PATH, bus, batt_smbus, 100000),
+BATT_SMBUS::BATT_SMBUS(int bus, uint16_t batt_smbus_addr) :
+	I2C("batt_smbus", BATT_SMBUS_DEVICE_PATH, bus, batt_smbus_addr, 400000),
 	_voltage(0),
 	_current(0),
 	_capacity(0),
@@ -131,15 +134,19 @@ BATT_SMBUS::~BATT_SMBUS()
 int
 BATT_SMBUS::init()
 {
-	int ret = I2C::init();
+	int ret = ENOTTY;
+	int retry_count = 0;
+
+	// attempt to initialise I2C bus 10 times
+	while (ret != OK && retry_count < 10) {
+		ret = I2C::init();
+		retry_count++;
+	}
 
 	if (ret != OK) {
 		errx(1,"failed to init I2C");
 		return ret;
 	}
-
-	/* read battery capacity */
-	ret = get_capacity();
 
 	return ret;
 }
@@ -152,12 +159,11 @@ BATT_SMBUS::probe()
 	/* read battery capacity to ensure we can communicate successfully */
 	ret = get_capacity();
 
-	//return ret;
-	return OK;
+	return ret;
 }
 
 int
-BATT_SMBUS::info()
+BATT_SMBUS::test()
 {
 	int volt_ret = get_voltage();
 	int curr_ret = get_current();
@@ -217,65 +223,25 @@ BATT_SMBUS::ioctl(struct file *filp, int cmd, unsigned long arg)
 int
 BATT_SMBUS::get_voltage()
 {
-	uint8_t result[2];
-	int ret;
-
-	// read voltage
-	ret = transfer(nullptr, BATT_SMBUS_VOLTAGE, &result[0], 2);
-	if (ret == OK) {
-		_voltage = (unsigned int)result[0] << 8 || (unsigned int)result[1];
-	}
-
-	// return success or failure
-	return ret;
+	return read_reg(BATT_SMBUS_VOLTAGE, _voltage);
 }
 
 int
 BATT_SMBUS::get_current()
 {
-	uint8_t result[2];
-	int ret;
-
-	// read current
-	ret = transfer(nullptr, BATT_SMBUS_CURRENT, &result[0], 2);
-	if (ret == OK) {
-		_current = (unsigned int)result[0] << 8 || (unsigned int)result[1];
-	}
-
-	// return success or failure
-	return ret;
+	return read_reg(BATT_SMBUS_CURRENT, _current);
 }
 
 int
 BATT_SMBUS::get_capacity()
 {
-	uint8_t result[2];
-	int ret;
-
-	// read current
-	ret = transfer(nullptr, BATT_SMBUS_DESIGN_CAPACITY, &result[0], 2);
-	if (ret == OK) {
-		_capacity = (unsigned int)result[0] << 8 || (unsigned int)result[1];
-	}
-
-	// return success or failure
-	return ret;
+	return read_reg(BATT_SMBUS_DESIGN_CAPACITY, _capacity);
 }
 
 int
 BATT_SMBUS::get_design_voltage()
 {
-	uint8_t result[2];
-	int ret;
-
-	// read current
-	ret = transfer(nullptr, BATT_SMBUS_DESIGN_VOLTAGE, &result[0], 2);
-	if (ret == OK) {
-		_design_voltage = (unsigned int)result[0] << 8 || (unsigned int)result[1];
-	}
-
-	// return success or failure
-	return ret;
+	return read_reg(BATT_SMBUS_DESIGN_VOLTAGE, _design_voltage);
 }
 
 int
@@ -285,13 +251,34 @@ BATT_SMBUS::get_cell_voltage()
 	int ret;
 
 	// read current
-	ret = transfer(nullptr, BATT_SMBUS_MANUFACTURE_INFO, &result[0], 13);
+	uint8_t reg = BATT_SMBUS_MANUFACTURE_INFO;
+	ret = transfer(&reg, 1, result, 13);
 	if (ret == OK) {
 	    // extract individual cell voltages
-		_cell_voltage[0] = (unsigned int)result[12]<<8 | (unsigned int)result[11];
-		_cell_voltage[1] = (unsigned int)result[10]<<8 | (unsigned int)result[9];
-		_cell_voltage[2] = (unsigned int)result[8]<<8 | (unsigned int)result[7];
-		_cell_voltage[3] = (unsigned int)result[6]<<8 | (unsigned int)result[5];
+		_cell_voltage[0] = (uint16_t)result[12]<<8 | (uint16_t)result[11];
+		_cell_voltage[1] = (uint16_t)result[10]<<8 | (uint16_t)result[9];
+		_cell_voltage[2] = (uint16_t)result[8]<<8 | (uint16_t)result[7];
+		_cell_voltage[3] = (uint16_t)result[6]<<8 | (uint16_t)result[5];
+	}
+
+	// return success or failure
+	return ret;
+}
+
+int
+BATT_SMBUS::read_reg(uint8_t reg, uint16_t &val)
+{
+	int ret = ENOTTY;
+	int retry_count = 0;
+	uint8_t buff[2];
+
+	// read current
+	while (ret != OK && retry_count < 10) {
+		ret = transfer(&reg, 1, buff, 2);
+		retry_count++;
+	}
+	if (ret == OK) {
+		val = (uint16_t)buff[1] << 8 || (uint16_t)buff[0];
 	}
 
 	// return success or failure
@@ -372,24 +359,7 @@ batt_smbus_main(int argc, char *argv[])
 	}
 
 	if (!strcmp(verb, "test")) {
-		fd = open(BATT_SMBUS_DEVICE_PATH, 0);
-
-		if (fd == -1) {
-			errx(1, "Unable to open " BATT_SMBUS_DEVICE_PATH);
-		}
-
-		// read voltage
-		int voltage = ioctl(fd, BATT_SMBUS_READ_VOLTAGE, (unsigned long)0);
-
-		// display voltage
-		warnx("volt:%d", voltage);
-
-		close(fd);
-		exit(ret);
-	}
-
-	if (!strcmp(verb, "info")) {
-		g_batt_smbus->info();
+		g_batt_smbus->test();
 		exit(0);
 	}
 
