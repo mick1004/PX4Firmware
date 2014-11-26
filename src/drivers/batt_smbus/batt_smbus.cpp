@@ -41,27 +41,41 @@
 
 #include <nuttx/config.h>
 
-#include <drivers/device/i2c.h>
-
 #include <sys/types.h>
 #include <stdint.h>
-#include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <sched.h>
+#include <semaphore.h>
+#include <string.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include <poll.h>
+#include <errno.h>
 #include <stdio.h>
+#include <math.h>
+#include <unistd.h>
 #include <ctype.h>
 
+#include <nuttx/arch.h>
 #include <nuttx/wqueue.h>
+#include <nuttx/clock.h>
+
+#include <board_config.h>
 
 #include <systemlib/perf_counter.h>
 #include <systemlib/err.h>
 #include <systemlib/systemlib.h>
 
-#include <board_config.h>
+#include <uORB/uORB.h>
+#include <uORB/topics/subsystem_info.h>
+#include <uORB/topics/battery_status.h>
 
+#include <float.h>
+
+#include <drivers/device/i2c.h>
+#include <drivers/drv_hrt.h>
 #include <drivers/drv_batt_smbus.h>
+#include <drivers/device/ringbuffer.h>
 
 #define BATT_SMBUS_I2C_BUS				PX4_I2C_BUS_EXPANSION
 #define BATT_SMBUS_ADDR					0x0B	/* I2C address */
@@ -72,6 +86,11 @@
 #define BATT_SMBUS_SERIALNUM			0x1c	/* serial number register */
 #define BATT_SMBUS_MANUFACTURE_INFO		0x25	/* cell voltage register */
 #define BATT_SMBUS_CURRENT				0x2a	/* current register */
+#define BATT_SMBUS_MEASUREMENT_INTERVAL_MS	(1000000 / 10)	/* time in microseconds, measure at 10hz */
+
+#ifndef CONFIG_SCHED_WORKQUEUE
+# error This requires CONFIG_SCHED_WORKQUEUE.
+#endif
 
 class BATT_SMBUS : public device::I2C
 {
@@ -80,7 +99,6 @@ public:
 	virtual ~BATT_SMBUS();
 
 	virtual int		init();
-	virtual int		probe();
 	virtual int		test();
 	virtual int		ioctl(struct file *filp, int cmd, unsigned long arg);
 
@@ -91,17 +109,39 @@ public:
 	int				get_design_voltage();
 	int				get_cell_voltage();
 
+protected:
+	virtual int		probe();		// check if the device can be contacted
+
 private:
 
-	// internal variables
-	uint16_t			_voltage;	// voltage in millivolts
-	uint16_t 			_current;	// current in milliamps
-	uint16_t			_capacity;	// total pack capacity in mAh
-	uint16_t			_design_voltage;	// maximum designed voltage of battery
-	batt_smbus_cell_voltage	_cell_voltage;	// individual cell voltages
+	// start periodic reads from the battery
+	void			start();
+
+	// stop periodic reads from the battery
+	void			stop();
+
+	// static function that is called by worker queue
+	static void		cycle_trampoline(void *arg);
+
+	// perform a read from the battery
+	void			cycle();
 
 	// read_reg - read a word from specified register
 	int				read_reg(uint8_t reg, uint16_t &val);
+
+	// internal variables
+	bool			_sensor_ok;		// true if battery was found and reports ok
+	work_s			_work;			// work queue for scheduling reads
+	unsigned		_measure_ticks;
+	RingBuffer		*_reports;		// buffer of recorded voltages, currents
+	struct battery_status_s _last_report;	// last published report, used for test()
+	orb_advert_t	_batt_topic;
+	orb_id_t		_batt_orb_id;
+	uint16_t		_voltage;	// voltage in millivolts
+	uint16_t 		_current;	// current in milliamps
+	uint16_t		_capacity;	// total pack capacity in mAh
+	uint16_t		_design_voltage;	// maximum designed voltage of battery
+	batt_smbus_cell_voltage	_cell_voltage;	// individual cell voltages
 };
 
 /* for now, we only support one BATT_SMBUS */
@@ -117,11 +157,23 @@ extern "C" __EXPORT int batt_smbus_main(int argc, char *argv[]);
 // constructor
 BATT_SMBUS::BATT_SMBUS(int bus, uint16_t batt_smbus_addr) :
 	I2C("batt_smbus", BATT_SMBUS_DEVICE_PATH, bus, batt_smbus_addr, 400000),
+	_sensor_ok(false),
+	_work{},
+	_measure_ticks(0),
+	_reports(nullptr),
+	_batt_topic(-1),
+	_batt_orb_id(nullptr),
 	_voltage(0),
 	_current(0),
 	_capacity(0),
 	_design_voltage(0)
 {
+	// work_cancel in the dtor will explode if we don't do this...
+	memset(&_work, 0, sizeof(_work));
+
+	// init orb id
+	_batt_orb_id = ORB_ID(battery_status);
+
 	// initialise cell voltage
 	memset(_cell_voltage, 0, sizeof(_cell_voltage));
 }
@@ -129,6 +181,12 @@ BATT_SMBUS::BATT_SMBUS(int bus, uint16_t batt_smbus_addr) :
 // destructor
 BATT_SMBUS::~BATT_SMBUS()
 {
+	/* make sure we are truly inactive */
+	stop();
+
+	if (_reports != nullptr) {
+		delete _reports;
+	}
 }
 
 int
@@ -146,18 +204,17 @@ BATT_SMBUS::init()
 	if (ret != OK) {
 		errx(1,"failed to init I2C");
 		return ret;
+	} else {
+		/* allocate basic report buffers */
+		_reports = new RingBuffer(2, sizeof(struct battery_status_s));
+		if (_reports == nullptr) {
+			ret = ENOTTY;
+		} else {
+			// start work queue
+			start();
+			_sensor_ok = true;
+		}
 	}
-
-	return ret;
-}
-
-int
-BATT_SMBUS::probe()
-{
-	int ret;
-
-	/* read battery capacity to ensure we can communicate successfully */
-	ret = get_capacity();
 
 	return ret;
 }
@@ -165,17 +222,8 @@ BATT_SMBUS::probe()
 int
 BATT_SMBUS::test()
 {
-	int volt_ret = get_voltage();
-	int curr_ret = get_current();
-
-	if (volt_ret == OK && curr_ret == OK) {
-		/* we don't care about power-save mode */
-		log("voltage: %u, current: %u", (unsigned)_voltage, (unsigned)_current);
-		return OK;
-	} else {
-		warnx("failed to read from battery");
-		return ENOTTY;
-	}
+	log("Time:%lu, volt:%f, curr:%f",(unsigned long)_last_report.timestamp, (float)_last_report.voltage_v, (float)_last_report.current_a);
+	return OK;
 }
 
 int
@@ -266,6 +314,76 @@ BATT_SMBUS::get_cell_voltage()
 }
 
 int
+BATT_SMBUS::probe()
+{
+	// always return OK to ensure device starts
+	return OK;
+}
+
+// start periodic reads from the battery
+void
+BATT_SMBUS::start()
+{
+	/* reset the report ring and state machine */
+	_reports->flush();
+
+	/* schedule a cycle to start things */
+	work_queue(HPWORK, &_work, (worker_t)&BATT_SMBUS::cycle_trampoline, this, 1);
+}
+
+// stop periodic reads from the battery
+void
+BATT_SMBUS::stop()
+{
+	work_cancel(HPWORK, &_work);
+}
+
+// static function that is called by worker queue
+void
+BATT_SMBUS::cycle_trampoline(void *arg)
+{
+	BATT_SMBUS *dev = (BATT_SMBUS *)arg;
+
+	dev->cycle();
+}
+
+// perform a read from the battery
+void
+BATT_SMBUS::cycle()
+{
+	// read data from sensor
+	struct battery_status_s new_report;
+
+	// set time of reading
+	new_report.timestamp = hrt_absolute_time();
+
+    // read voltage and current
+	uint16_t tmp;
+    if (read_reg(BATT_SMBUS_VOLTAGE, tmp) == OK) {
+    	new_report.voltage_v = (float)tmp;
+    }
+    if (read_reg(BATT_SMBUS_CURRENT, tmp) == OK) {
+    	new_report.current_a = (float)tmp;
+    }
+
+    // copy report for test()
+    _last_report = new_report;
+
+    // public readings to orb
+	if (_batt_topic != -1) {
+		orb_publish(_batt_orb_id, _batt_topic, &new_report);
+	} else {
+		_batt_topic = orb_advertise(_batt_orb_id, &new_report);
+		if (_batt_topic < 0) {
+			errx(1, "ADVERT FAIL");
+		}
+	}
+
+	/* schedule a fresh cycle call when the measurement is done */
+	work_queue(HPWORK, &_work, (worker_t)&BATT_SMBUS::cycle_trampoline, this, USEC2TICK(BATT_SMBUS_MEASUREMENT_INTERVAL_MS));
+}
+
+int
 BATT_SMBUS::read_reg(uint8_t reg, uint16_t &val)
 {
 	int ret = ENOTTY;
@@ -325,9 +443,6 @@ batt_smbus_main(int argc, char *argv[])
 	}
 
 	const char *verb = argv[optind];
-
-	int fd;
-	int ret;
 
 	if (!strcmp(verb, "start")) {
 		if (g_batt_smbus != nullptr) {

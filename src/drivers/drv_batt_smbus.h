@@ -41,6 +41,7 @@
 
 #include <stdint.h>
 #include <sys/ioctl.h>
+#include "drv_orb_dev.h"
 
 /* device path */
 #define BATT_SMBUS_DEVICE_PATH "/dev/batt_smbus"
@@ -72,3 +73,6 @@
 
 /* structure to hold individual cell voltages */
 typedef uint16_t batt_smbus_cell_voltage[BATT_SMBUS_MAX_CELLS];
+
+/* ObjDev tag for battery data */
+ORB_DECLARE(battery_status);
