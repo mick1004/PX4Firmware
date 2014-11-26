@@ -171,9 +171,6 @@ BATT_SMBUS::BATT_SMBUS(int bus, uint16_t batt_smbus_addr) :
 	// work_cancel in the dtor will explode if we don't do this...
 	memset(&_work, 0, sizeof(_work));
 
-	// init orb id
-	_batt_orb_id = ORB_ID(battery_status);
-
 	// initialise cell voltage
 	memset(_cell_voltage, 0, sizeof(_cell_voltage));
 }
@@ -215,6 +212,9 @@ BATT_SMBUS::init()
 			_sensor_ok = true;
 		}
 	}
+
+	// init orb id
+	_batt_orb_id = ORB_ID(battery_status);
 
 	return ret;
 }
@@ -378,6 +378,12 @@ BATT_SMBUS::cycle()
 			errx(1, "ADVERT FAIL");
 		}
 	}
+
+	/* post a report to the ring */
+	_reports->force(&new_report);
+
+	/* notify anyone waiting for data */
+	poll_notify(POLLIN);
 
 	/* schedule a fresh cycle call when the measurement is done */
 	work_queue(HPWORK, &_work, (worker_t)&BATT_SMBUS::cycle_trampoline, this, USEC2TICK(BATT_SMBUS_MEASUREMENT_INTERVAL_MS));
