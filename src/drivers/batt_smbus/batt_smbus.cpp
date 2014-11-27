@@ -222,7 +222,13 @@ BATT_SMBUS::init()
 int
 BATT_SMBUS::test()
 {
-	log("Time:%lu, volt:%f, curr:%f",(unsigned long)_last_report.timestamp, (float)_last_report.voltage_v, (float)_last_report.current_a);
+	int sub = orb_subscribe(ORB_ID(battery_status));
+	struct battery_status_s status;
+
+	if (orb_copy(ORB_ID(battery_status), sub, &status) == OK) {
+		printf("V=%f C=%f\n", status.voltage_v, status.current_a);
+	}
+
 	return OK;
 }
 
@@ -366,9 +372,6 @@ BATT_SMBUS::cycle()
     	new_report.current_a = (float)tmp;
     }
 
-    // copy report for test()
-    _last_report = new_report;
-
     // public readings to orb
 	if (_batt_topic != -1) {
 		orb_publish(_batt_orb_id, _batt_topic, &new_report);
@@ -378,6 +381,9 @@ BATT_SMBUS::cycle()
 			errx(1, "ADVERT FAIL");
 		}
 	}
+
+    // copy report for test()
+    _last_report = new_report;
 
 	/* post a report to the ring */
 	_reports->force(&new_report);
