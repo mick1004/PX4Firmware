@@ -138,7 +138,7 @@ private:
 	orb_advert_t	_batt_topic;
 	orb_id_t		_batt_orb_id;
 	uint16_t		_voltage;	// voltage in millivolts
-	uint16_t 		_current;	// current in milliamps
+	int16_t 		_current;	// current in milliamps (negative is discharging, positive is charging)
 	uint16_t		_capacity;	// total pack capacity in mAh
 	uint16_t		_design_voltage;	// maximum designed voltage of battery
 	batt_smbus_cell_voltage	_cell_voltage;	// individual cell voltages
@@ -156,7 +156,7 @@ extern "C" __EXPORT int batt_smbus_main(int argc, char *argv[]);
 
 // constructor
 BATT_SMBUS::BATT_SMBUS(int bus, uint16_t batt_smbus_addr) :
-	I2C("batt_smbus", BATT_SMBUS_DEVICE_PATH, bus, batt_smbus_addr, 400000),
+	I2C("batt_smbus", BATT_SMBUS_DEVICE_PATH, bus, batt_smbus_addr, 100000),
 	_sensor_ok(false),
 	_work{},
 	_measure_ticks(0),
@@ -190,13 +190,9 @@ int
 BATT_SMBUS::init()
 {
 	int ret = ENOTTY;
-	int retry_count = 0;
 
-	// attempt to initialise I2C bus 10 times
-	while (ret != OK && retry_count < 10) {
-		ret = I2C::init();
-		retry_count++;
-	}
+	// attempt to initialise I2C bus
+	ret = I2C::init();
 
 	if (ret != OK) {
 		errx(1,"failed to init I2C");
@@ -225,8 +221,12 @@ BATT_SMBUS::test()
 	int sub = orb_subscribe(ORB_ID(battery_status));
 	struct battery_status_s status;
 
-	if (orb_copy(ORB_ID(battery_status), sub, &status) == OK) {
-		printf("V=%f C=%f\n", status.voltage_v, status.current_a);
+	for (uint8_t i=0; i<10; i++) {
+		if (orb_copy(ORB_ID(battery_status), sub, &status) == OK) {
+			printf("V=%f C=%f\n", status.voltage_v, status.current_a);
+		}
+		// sleep for 0.2 seconds
+		usleep(200000);
 	}
 
 	return OK;
@@ -283,7 +283,10 @@ BATT_SMBUS::get_voltage()
 int
 BATT_SMBUS::get_current()
 {
-	return read_reg(BATT_SMBUS_CURRENT, _current);
+	uint16_t tmp;
+	// To-Do: change to use read_block
+	return read_reg(BATT_SMBUS_CURRENT, tmp);
+	_current = (int16_t)tmp;
 }
 
 int
@@ -304,7 +307,7 @@ BATT_SMBUS::get_cell_voltage()
 	uint8_t result[13];
 	int ret;
 
-	// read current
+	// read manufacturer info
 	uint8_t reg = BATT_SMBUS_MANUFACTURE_INFO;
 	ret = transfer(&reg, 1, result, 13);
 	if (ret == OK) {
@@ -367,9 +370,8 @@ BATT_SMBUS::cycle()
 	uint16_t tmp;
     if (read_reg(BATT_SMBUS_VOLTAGE, tmp) == OK) {
     	new_report.voltage_v = (float)tmp;
-    }
-    if (read_reg(BATT_SMBUS_CURRENT, tmp) == OK) {
-    	new_report.current_a = (float)tmp;
+    } else {
+    	new_report.voltage_v = 0.0f;
     }
 
     // public readings to orb
@@ -399,14 +401,10 @@ int
 BATT_SMBUS::read_reg(uint8_t reg, uint16_t &val)
 {
 	int ret = ENOTTY;
-	int retry_count = 0;
 	uint8_t buff[2];
 
 	// read current
-	while (ret != OK && retry_count < 10) {
-		ret = transfer(&reg, 1, buff, 2);
-		retry_count++;
-	}
+    ret = transfer(&reg, 1, buff, 2);
 	if (ret == OK) {
 		val = (uint16_t)buff[1] << 8 | (uint16_t)buff[0];
 	}
