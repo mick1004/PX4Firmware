@@ -156,7 +156,7 @@ extern "C" __EXPORT int batt_smbus_main(int argc, char *argv[]);
 
 // constructor
 BATT_SMBUS::BATT_SMBUS(int bus, uint16_t batt_smbus_addr) :
-	I2C("batt_smbus", BATT_SMBUS_DEVICE_PATH, bus, batt_smbus_addr, 100000),
+	I2C("batt_smbus", BATT_SMBUS_DEVICE_PATH, bus, batt_smbus_addr, 400000),
 	_sensor_ok(false),
 	_work{},
 	_measure_ticks(0),
@@ -223,7 +223,7 @@ BATT_SMBUS::test()
 
 	for (uint8_t i=0; i<10; i++) {
 		if (orb_copy(ORB_ID(battery_status), sub, &status) == OK) {
-			printf("V=%f C=%f\n", status.voltage_v, status.current_a);
+			warnx("V=%f C=%f\n", status.voltage_v, status.current_a);
 		}
 		// sleep for 0.2 seconds
 		usleep(200000);
