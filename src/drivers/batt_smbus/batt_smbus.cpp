@@ -103,8 +103,6 @@ public:
 	virtual int		ioctl(struct file *filp, int cmd, unsigned long arg);
 
 	// read battery information, updates internal variables and returns OK if successful
-	int				get_voltage();
-	int				get_current();
 	int				get_capacity();
 	int				get_design_voltage();
 	int				get_cell_voltage();
@@ -129,6 +127,9 @@ private:
 	// read_reg - read a word from specified register
 	int				read_reg(uint8_t reg, uint16_t &val);
 
+    // read_block - returns number of characters read if successful, zero if unsuccessful
+	uint8_t			read_block(uint8_t reg, uint8_t* data, int max_len, bool append_zero);
+
 	// internal variables
 	bool			_sensor_ok;		// true if battery was found and reports ok
 	work_s			_work;			// work queue for scheduling reads
@@ -137,8 +138,6 @@ private:
 	struct battery_status_s _last_report;	// last published report, used for test()
 	orb_advert_t	_batt_topic;
 	orb_id_t		_batt_orb_id;
-	uint16_t		_voltage;	// voltage in millivolts
-	int16_t 		_current;	// current in milliamps (negative is discharging, positive is charging)
 	uint16_t		_capacity;	// total pack capacity in mAh
 	uint16_t		_design_voltage;	// maximum designed voltage of battery
 	batt_smbus_cell_voltage	_cell_voltage;	// individual cell voltages
@@ -163,8 +162,6 @@ BATT_SMBUS::BATT_SMBUS(int bus, uint16_t batt_smbus_addr) :
 	_reports(nullptr),
 	_batt_topic(-1),
 	_batt_orb_id(nullptr),
-	_voltage(0),
-	_current(0),
 	_capacity(0),
 	_design_voltage(0)
 {
@@ -238,16 +235,6 @@ BATT_SMBUS::ioctl(struct file *filp, int cmd, unsigned long arg)
 	int ret = ENOTTY;
 
 	switch (cmd) {
-	case BATT_SMBUS_READ_VOLTAGE:
-		/* read voltage */
-		get_voltage();
-		return _voltage;
-
-	case BATT_SMBUS_READ_CURRENT:
-		/* read current */
-		get_current();
-		return _current;
-
 	case BATT_SMBUS_READ_CAPACITY:
 		/* read capacity */
 		get_capacity();
@@ -272,21 +259,6 @@ BATT_SMBUS::ioctl(struct file *filp, int cmd, unsigned long arg)
 	}
 
 	return ret;
-}
-
-int
-BATT_SMBUS::get_voltage()
-{
-	return read_reg(BATT_SMBUS_VOLTAGE, _voltage);
-}
-
-int
-BATT_SMBUS::get_current()
-{
-	uint16_t tmp;
-	// To-Do: change to use read_block
-	return read_reg(BATT_SMBUS_CURRENT, tmp);
-	_current = (int16_t)tmp;
 }
 
 int
@@ -366,12 +338,20 @@ BATT_SMBUS::cycle()
 	// set time of reading
 	new_report.timestamp = hrt_absolute_time();
 
-    // read voltage and current
+    // read voltage
 	uint16_t tmp;
     if (read_reg(BATT_SMBUS_VOLTAGE, tmp) == OK) {
     	new_report.voltage_v = (float)tmp;
     } else {
     	new_report.voltage_v = 0.0f;
+    }
+
+    // read current
+    uint8_t buff[4];
+    if (read_block(BATT_SMBUS_CURRENT, buff, 4, false) == 4) {
+    	new_report.current_a = (float)((int32_t)((uint32_t)buff[3]<<24 | (uint32_t)buff[2]<<16 | (uint32_t)buff[1]<<8 | (uint32_t)buff[0])) / 1000.0f;
+    } else {
+    	new_report.current_a = 0.0f;
     }
 
     // public readings to orb
@@ -400,11 +380,10 @@ BATT_SMBUS::cycle()
 int
 BATT_SMBUS::read_reg(uint8_t reg, uint16_t &val)
 {
-	int ret = ENOTTY;
 	uint8_t buff[2];
 
 	// read current
-    ret = transfer(&reg, 1, buff, 2);
+    int ret = transfer(&reg, 1, buff, 2);
 	if (ret == OK) {
 		val = (uint16_t)buff[1] << 8 | (uint16_t)buff[0];
 	}
@@ -412,6 +391,41 @@ BATT_SMBUS::read_reg(uint8_t reg, uint16_t &val)
 	// return success or failure
 	return ret;
 }
+
+// read_block - returns number of characters read if successful, zero if unsuccessful
+uint8_t BATT_SMBUS::read_block(uint8_t reg, uint8_t* data, int max_len, bool append_zero)
+{
+	uint8_t buff[max_len+1];    // buffer to hold results
+
+	// read bytes
+	int ret = transfer(&reg, 1,buff, max_len+1);
+
+	// return zero on failure
+	if (ret != OK) {
+		return 0;
+	}
+
+	// get length
+	uint8_t bufflen = buff[0];
+
+	// sanity check length returned by smbus
+	if (bufflen == 0 || bufflen > max_len) {
+		return 0;
+	}
+
+	// copy data
+	memcpy(data, &buff[1], bufflen);
+
+	// optionally add zero to end
+	if (append_zero) {
+		data[bufflen] = '\0';
+	}
+
+	// return success
+	return bufflen;
+}
+
+///////////////////////// shell functions ///////////////////////
 
 void
 batt_smbus_usage()
