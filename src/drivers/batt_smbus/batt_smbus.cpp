@@ -84,9 +84,10 @@
 #define BATT_SMBUS_DESIGN_CAPACITY		0x18	/* design capacity register */
 #define BATT_SMBUS_DESIGN_VOLTAGE		0x19	/* design voltage register */
 #define BATT_SMBUS_SERIALNUM			0x1c	/* serial number register */
+#define BATT_SMBUS_MANUFACTURE_NAME     0x20    /* manufacturer name */
 #define BATT_SMBUS_MANUFACTURE_INFO		0x25	/* cell voltage register */
 #define BATT_SMBUS_CURRENT				0x2a	/* current register */
-#define BATT_SMBUS_MEASUREMENT_INTERVAL_MS	(1000000 / 10)	/* time in microseconds, measure at 10hz */
+#define BATT_SMBUS_MEASUREMENT_INTERVAL_MS	(1000000 / 1)	/* time in microseconds, measure at 10hz */
 
 #ifndef CONFIG_SCHED_WORKQUEUE
 # error This requires CONFIG_SCHED_WORKQUEUE.
@@ -270,6 +271,22 @@ BATT_SMBUS::cycle()
 		new_report.voltage_v = ((float)tmp) / 1000.0f;
 
 		// To-Do: read current as block from BATT_SMBUS_CURRENT register
+		usleep(1);
+
+		uint8_t buff[10];
+		uint8_t cmd = BATT_SMBUS_MANUFACTURE_NAME;
+		memset(buff,0,sizeof(buff));
+		int ret = transfer(&cmd, 1, buff, 7);
+		warnx("r:%d B:%x,%x,%x,%x,%x,%x,%x,%x",
+			(int)ret,
+			(int)buff[0],
+			(int)buff[1],
+			(int)buff[2],
+			(int)buff[3],
+			(int)buff[4],
+			(int)buff[5],
+			(int)buff[6],
+			(int)buff[7]);
 
 		// publish to orb
 		if (_batt_topic != -1) {
