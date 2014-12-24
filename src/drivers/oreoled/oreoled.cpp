@@ -1,0 +1,443 @@
+/****************************************************************************
+ *
+ *   Copyright (C) 2012, 2013 PX4 Development Team. All rights reserved.
+ *   Author: Julian Oes <joes@student.ethz.ch>
+ *           Anton Babushkin <anton.babushkin@me.com>
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ * 3. Neither the name PX4 nor the names of its contributors may be
+ *    used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ * OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+ * AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ *
+ ****************************************************************************/
+
+/**
+ * @file oreoled.cpp
+ *
+ * Driver for the onboard RGB LED controller (TCA62724FMG) connected via I2C.
+ *
+ */
+
+#include <nuttx/config.h>
+
+#include <drivers/device/i2c.h>
+
+#include <sys/types.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <ctype.h>
+
+#include <nuttx/wqueue.h>
+
+#include <systemlib/perf_counter.h>
+#include <systemlib/err.h>
+#include <systemlib/systemlib.h>
+
+#include <board_config.h>
+
+#include <drivers/drv_oreoled.h>
+
+#define OREOLED_NUM_LEDS		4		// maximum number of LEDs the oreo led driver can support
+#define OREOLED_BASE_I2C_ADDR	0x68	// base i2c address (7-bit)
+
+class OREOLED : public device::I2C
+{
+public:
+	OREOLED(int bus, int i2c_addr);
+	virtual ~OREOLED();
+
+	virtual int		init();
+	virtual int		probe();
+	virtual int		info();
+	virtual int		ioctl(struct file *filp, int cmd, unsigned long arg);
+
+private:
+	bool			_overall_health;				// overall health of sensor (true if at least one LED is responding)
+	bool			_healthy[OREOLED_NUM_LEDS];		// health of each LED
+	oreoled_pattern	_pattern[OREOLED_NUM_LEDS];		// pattern of each LED
+	uint8_t			_r[OREOLED_NUM_LEDS];
+	uint8_t			_g[OREOLED_NUM_LEDS];
+	uint8_t			_b[OREOLED_NUM_LEDS];
+
+	/* send latest requested rgb values to all oreo LEDs */
+	int				send_rgb();
+
+	/* get latest requested rgb values sent to an individual led*/
+	int				get(uint8_t instance, oreoled_pattern &pattern, uint8_t &r, uint8_t &g, uint8_t &b);
+};
+
+/* for now, we only support one OREOLED */
+namespace
+{
+OREOLED *g_oreoled = nullptr;
+}
+
+void oreoled_usage();
+
+extern "C" __EXPORT int oreoled_main(int argc, char *argv[]);
+
+/* constructor */
+OREOLED::OREOLED(int bus, int i2c_addr) :
+	I2C("oreoled", OREOLED_DEVICE_PATH, bus, i2c_addr, 100000),
+	_overall_health(false)
+{
+	// initialise to unhealthy
+	memset(_healthy, false, sizeof(_healthy));
+
+	// initialise patterns and colours
+	memset(_pattern, OREOLED_PATTERN_OFF, sizeof(_pattern));
+	memset(_r, 0, sizeof(_r));
+	memset(_g, 0, sizeof(_g));
+	memset(_b, 0, sizeof(_b));
+}
+
+/* destructor */
+OREOLED::~OREOLED()
+{
+}
+
+int
+OREOLED::init()
+{
+	int ret;
+
+	/* initialise to unhealthy */
+	_overall_health = false;
+
+	/* initialise I2C bus */
+	ret = I2C::init();
+	if (ret != OK) {
+		return ret;
+	}
+
+	/* prepare command to turn off LED*/
+	uint8_t msg[] = {OREOLED_PATTERN_OFF};
+
+	/* switch off each LED and set health */
+	for (uint8_t i=0; i<OREOLED_NUM_LEDS; i++) {
+		/* set I2C address */
+		set_address(OREOLED_BASE_I2C_ADDR+i);
+		/* send I2C command and record health*/
+		_healthy[i] = (transfer(msg, sizeof(msg), nullptr, 0) == OK);
+		usleep(1);
+		/* set overall sensor to healthy if at least one LED is responding */
+		if (_healthy[i]) {
+			_overall_health = true;
+			ret = OK;
+			warnx("OREO %d ok",(unsigned)i);
+		} else {
+			warnx("OREO %d bad",(unsigned)i);
+		}
+	}
+
+	return OK;
+}
+
+int
+OREOLED::probe()
+{
+	/* always return true */
+	return OK;
+}
+
+int
+OREOLED::info()
+{
+	int ret;
+	oreoled_pattern pattern;
+	uint8_t r, g, b;
+
+	// print info on each LED
+	for (uint8_t i=0; i<OREOLED_NUM_LEDS; i++) {
+		ret = get(i, pattern, r, g, b);
+		if (ret == OK) {
+			log("oreo %u: pattern:%u, red:%u, green:%u, blue: %u", (unsigned)i, (unsigned)pattern, (unsigned)r, (unsigned)g, (unsigned)b);
+		} else {
+			warnx("oreo %u: failed to read", (unsigned)i);
+		}
+	}
+
+	return OK;
+}
+
+int
+OREOLED::ioctl(struct file *filp, int cmd, unsigned long arg)
+{
+	int ret = ENOTTY;
+	uint8_t instance;
+
+	switch (cmd) {
+	case OREOLED_SET_RGB:
+		/* set the specified color */
+		instance = ((oreoled_rgbset_t *) arg)->instance;
+
+		/* special handling for request to set all instances rgb values */
+		if (instance == OREOLED_ALL_INSTANCES) {
+			memset(_pattern, ((oreoled_rgbset_t *) arg)->pattern, sizeof(_pattern));
+			memset(_r, ((oreoled_rgbset_t *) arg)->red, sizeof(_r));
+			memset(_g, ((oreoled_rgbset_t *) arg)->green, sizeof(_g));
+			memset(_b, ((oreoled_rgbset_t *) arg)->blue, sizeof(_b));
+
+		/* request to set individual instance's rgb value */
+		} else if (instance < OREOLED_NUM_LEDS) {
+			_pattern[instance] = ((oreoled_rgbset_t *) arg)->pattern;
+			_r[instance] = ((oreoled_rgbset_t *) arg)->red;
+			_g[instance] = ((oreoled_rgbset_t *) arg)->green;
+			_b[instance] = ((oreoled_rgbset_t *) arg)->blue;
+		}
+
+		/* send I2C updates */
+		send_rgb();
+		return OK;
+
+	default:
+		/* see if the parent class can make any use of it */
+		ret = CDev::ioctl(filp, cmd, arg);
+		break;
+	}
+
+	return ret;
+}
+
+/**
+ * Send RGB to OREO LED driver according to current color
+ */
+int
+OREOLED::send_rgb()
+{
+	int ret = ENOTTY;
+
+	/* return immediately if not healthy */
+	if (!_overall_health) {
+		return ret;
+	}
+
+	/* for each healthy led */
+	for (uint8_t i=0; i<OREOLED_NUM_LEDS; i++) {
+		if (_healthy[i]) {
+			/* set I2C address */
+			set_address(OREOLED_BASE_I2C_ADDR+i);
+			/* prepare command */
+			uint8_t msg[] = {_pattern[i], OREOLED_PARAM_BIAS_RED, _r[i], OREOLED_PARAM_BIAS_GREEN, _g[i],OREOLED_PARAM_BIAS_BLUE, _b[i]};
+			/* send I2C command */
+			if (transfer(msg, sizeof(msg), nullptr, 0) == OK) {
+				ret = OK;
+			}
+			usleep(1);
+		}
+	}
+
+	return ret;
+}
+
+int
+OREOLED::get(uint8_t instance, oreoled_pattern &pattern, uint8_t &r, uint8_t &g, uint8_t &b)
+{
+	// sanity check instance
+	if (instance < OREOLED_NUM_LEDS) {
+		pattern = _pattern[instance];
+		r = _r[instance];
+		g = _g[instance];
+		b = _b[instance];
+		return OK;
+	} else {
+		return EINVAL;
+	}
+}
+
+void
+oreoled_usage()
+{
+	warnx("missing command: try 'start', 'test', 'info', 'off', 'stop', 'oreo 30 40 50'");
+	warnx("options:");
+	warnx("    -b i2cbus (%d)", PX4_I2C_BUS_LED);
+	warnx("    -a addr (0x%x)", OREOLED_BASE_I2C_ADDR);
+}
+
+int
+oreoled_main(int argc, char *argv[])
+{
+	int i2cdevice = -1;
+	int i2c_addr = OREOLED_BASE_I2C_ADDR; /* 7bit */
+
+	int ch;
+
+	/* jump over start/off/etc and look at options first */
+	while ((ch = getopt(argc, argv, "a:b:")) != EOF) {
+		switch (ch) {
+		case 'a':
+			i2c_addr = strtol(optarg, NULL, 0);
+			break;
+
+		case 'b':
+			i2cdevice = strtol(optarg, NULL, 0);
+			break;
+
+		default:
+			oreoled_usage();
+			exit(0);
+		}
+	}
+
+        if (optind >= argc) {
+            oreoled_usage();
+            exit(1);
+        }
+
+	const char *verb = argv[optind];
+
+	int fd;
+	int ret;
+
+	if (!strcmp(verb, "start")) {
+		if (g_oreoled != nullptr)
+			errx(1, "already started");
+
+		if (i2cdevice == -1) {
+			// try the external bus first
+			i2cdevice = PX4_I2C_BUS_EXPANSION;
+			g_oreoled = new OREOLED(PX4_I2C_BUS_EXPANSION, i2c_addr);
+
+			if (g_oreoled != nullptr && OK != g_oreoled->init()) {
+				delete g_oreoled;
+				g_oreoled = nullptr;
+			}
+
+			if (g_oreoled == nullptr) {
+				// fall back to default bus
+				if (PX4_I2C_BUS_LED == PX4_I2C_BUS_EXPANSION) {
+					errx(1, "init failed");
+				}
+				i2cdevice = PX4_I2C_BUS_LED;
+			}
+		}
+
+		if (g_oreoled == nullptr) {
+			g_oreoled = new OREOLED(i2cdevice, i2c_addr);
+
+			if (g_oreoled == nullptr)
+				errx(1, "new failed");
+
+			if (OK != g_oreoled->init()) {
+				delete g_oreoled;
+				g_oreoled = nullptr;
+				errx(1, "init failed");
+			}
+		}
+
+		exit(0);
+	}
+
+	/* need the driver past this point */
+	if (g_oreoled == nullptr) {
+		warnx("not started");
+		oreoled_usage();
+		exit(1);
+	}
+
+	if (!strcmp(verb, "test")) {
+		fd = open(OREOLED_DEVICE_PATH, 0);
+
+		if (fd == -1) {
+			errx(1, "Unable to open " OREOLED_DEVICE_PATH);
+		}
+
+		/* structure to hold desired colour */
+		oreoled_rgbset_t rgb_set_red = {OREOLED_ALL_INSTANCES, OREOLED_PATTERN_SOLID, 0xFF, 0x0, 0x0};
+		oreoled_rgbset_t rgb_set_blue = {OREOLED_ALL_INSTANCES, OREOLED_PATTERN_SOLID, 0x0, 0x0, 0xFF};
+		oreoled_rgbset_t rgb_set_off = {OREOLED_ALL_INSTANCES, OREOLED_PATTERN_OFF, 0x0, 0x0, 0x0};
+
+		/* flash red and blue for 3 seconds */
+		for (uint8_t i=0; i<30; i++) {
+			/* red */
+			ret = ioctl(fd, OREOLED_SET_RGB, (unsigned long)&rgb_set_red);
+			/* sleep for 0.05 seconds */
+			usleep(50000);
+			/* blue */
+			ret = ioctl(fd, OREOLED_SET_RGB, (unsigned long)&rgb_set_blue);
+			/* sleep for 0.05 seconds */
+			usleep(50000);
+		}
+		/* turn off LED */
+		ret = ioctl(fd, OREOLED_SET_RGB, (unsigned long)&rgb_set_off);
+
+		close(fd);
+		exit(ret);
+	}
+
+	if (!strcmp(verb, "info")) {
+		g_oreoled->info();
+		exit(0);
+	}
+
+	if (!strcmp(verb, "off") || !strcmp(verb, "stop")) {
+		fd = open(OREOLED_DEVICE_PATH, 0);
+
+		if (fd == -1) {
+			errx(1, "Unable to open " OREOLED_DEVICE_PATH);
+		}
+
+		/* turn off LED */
+		oreoled_rgbset_t rgb_set_off = {OREOLED_ALL_INSTANCES, OREOLED_PATTERN_OFF, 0x0, 0x0, 0x0};
+		ret = ioctl(fd, OREOLED_SET_RGB, (unsigned long)&rgb_set_off);
+
+		close(fd);
+		/* delete the oreoled object if stop was requested, in addition to turning off the LED. */
+		if (!strcmp(verb, "stop")) {
+			delete g_oreoled;
+			g_oreoled = nullptr;
+			exit(0);
+		}
+		exit(ret);
+	}
+
+	if (!strcmp(verb, "oreo")) {
+		if (argc < 5) {
+			errx(1, "Usage: oreoled oreo <red> <green> <blue>");
+		}
+
+		fd = open(OREOLED_DEVICE_PATH, 0);
+
+		if (fd == -1) {
+			errx(1, "Unable to open " OREOLED_DEVICE_PATH);
+		}
+
+		uint8_t red = strtol(argv[2], NULL, 0);
+		uint8_t green = strtol(argv[3], NULL, 0);
+		uint8_t blue = strtol(argv[4], NULL, 0);
+		oreoled_rgbset_t rgb_set = {OREOLED_ALL_INSTANCES, OREOLED_PATTERN_SOLID, red, green, blue};
+		ret = ioctl(fd, OREOLED_SET_RGB, (unsigned long)&rgb_set);
+		close(fd);
+		exit(ret);
+	}
+
+	oreoled_usage();
+	exit(0);
+}
