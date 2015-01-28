@@ -188,7 +188,7 @@ void batt_smbus_usage();
 extern "C" __EXPORT int batt_smbus_main(int argc, char *argv[]);
 
 BATT_SMBUS::BATT_SMBUS(int bus, uint16_t batt_smbus_addr) :
-	I2C("batt_smbus", BATT_SMBUS_DEVICE_PATH, bus, batt_smbus_addr, 400000),
+	I2C("batt_smbus", BATT_SMBUS_DEVICE_PATH, bus, batt_smbus_addr, 100000),
 	_work{},
 	_reports(nullptr),
 	_batt_topic(-1),
@@ -255,7 +255,7 @@ BATT_SMBUS::test()
 
 		if (updated) {
 			if (orb_copy(ORB_ID(battery_status), sub, &status) == OK) {
-				warnx("V=%4.2f C=%4.2f", status.voltage_v, status.current_a);
+				warnx("V=%4.2f C=%4.2f", (float)status.voltage_v, (float)status.current_a);
 			}
 		}
 
