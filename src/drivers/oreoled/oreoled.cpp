@@ -275,7 +275,7 @@ OREOLED::get(uint8_t instance, oreoled_pattern &pattern, uint8_t &r, uint8_t &g,
 void
 oreoled_usage()
 {
-	warnx("missing command: try 'start', 'test', 'info', 'off', 'stop', 'oreo 30 40 50'");
+	warnx("missing command: try 'start', 'test', 'info', 'off', 'stop', 'rgb 30 40 50'");
 	warnx("options:");
 	warnx("    -b i2cbus (%d)", PX4_I2C_BUS_LED);
 	warnx("    -a addr (0x%x)", OREOLED_BASE_I2C_ADDR);
@@ -418,9 +418,9 @@ oreoled_main(int argc, char *argv[])
 		exit(ret);
 	}
 
-	if (!strcmp(verb, "oreo")) {
+	if (!strcmp(verb, "rgb")) {
 		if (argc < 5) {
-			errx(1, "Usage: oreoled oreo <red> <green> <blue>");
+			errx(1, "Usage: oreoled rgb <red> <green> <blue>");
 		}
 
 		fd = open(OREOLED_DEVICE_PATH, 0);
