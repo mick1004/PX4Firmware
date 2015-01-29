@@ -55,6 +55,9 @@
 /** set constant RGB values */
 #define OREOLED_SET_RGB			_OREOLEDIOC(1)
 
+/** run macro */
+#define OREOLED_RUN_MACRO		_OREOLEDIOC(2)
+
 /* Oreo LED driver supports up to 4 leds */
 #define OREOLED_NUM_LEDS		4
 
@@ -70,7 +73,8 @@ enum oreoled_pattern {
 	OREOLED_PATTERN_STROBE,
 	OREOLED_PATTERN_FADEIN,
 	OREOLED_PATTERN_FADEOUT,
-	OREOLED_PATTERN_PARAMUPDATE
+	OREOLED_PATTERN_PARAMUPDATE,
+	OREOLED_PATTERN_ENUM_COUNT
 };
 
 /* enum passed to OREOLED_SET_MODE ioctl()*/
@@ -84,7 +88,8 @@ enum oreoled_param {
 	OREOLED_PARAM_PERIOD,
 	OREOLED_PARAM_REPEAT,
 	OREOLED_PARAM_PHASEOFFSET,
-	OREOLED_PARAM_MACRO
+	OREOLED_PARAM_MACRO,
+	OREOLED_PARAM_ENUM_COUNT
 };
 
 /* enum of available macros */
@@ -99,7 +104,8 @@ enum oreoled_macro {
 	OREOLED_PARAM_MACRO_GREEN,
 	OREOLED_PARAM_MACRO_BLUE,
 	OREOLED_PARAM_MACRO_AMBER,
-	OREOLED_PARAM_MACRO_WHITE
+	OREOLED_PARAM_MACRO_WHITE,
+	OREOLED_PARAM_MACRO_ENUM_COUNT
 };
 
 /* 
@@ -114,3 +120,11 @@ typedef struct {
 	uint8_t green;
 	uint8_t blue;
 } oreoled_rgbset_t;
+
+/*
+  structure passed to OREOLED_RUN_MACRO ioctl()
+ */
+typedef struct {
+	uint8_t instance;
+	oreoled_macro macro;
+} oreoled_macrorun_t;

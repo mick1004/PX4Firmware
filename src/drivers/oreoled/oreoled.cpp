@@ -85,9 +85,13 @@ private:
 	uint8_t			_r[OREOLED_NUM_LEDS];
 	uint8_t			_g[OREOLED_NUM_LEDS];
 	uint8_t			_b[OREOLED_NUM_LEDS];
+	oreoled_macro   _macro[OREOLED_NUM_LEDS];
 
 	/* send latest requested rgb values to all oreo LEDs */
 	int				send_rgb();
+
+	/* send latest requested macro to all oreo LEDs */
+	int				send_macro();
 
 	/* get latest requested rgb values sent to an individual led*/
 	int				get(uint8_t instance, oreoled_pattern &pattern, uint8_t &r, uint8_t &g, uint8_t &b);
@@ -116,6 +120,7 @@ OREOLED::OREOLED(int bus, int i2c_addr) :
 	memset(_r, 0, sizeof(_r));
 	memset(_g, 0, sizeof(_g));
 	memset(_b, 0, sizeof(_b));
+	memset(_macro, 0, sizeof(_macro));
 }
 
 /* destructor */
@@ -217,6 +222,23 @@ OREOLED::ioctl(struct file *filp, int cmd, unsigned long arg)
 		send_rgb();
 		return OK;
 
+	case OREOLED_RUN_MACRO:
+		/* run a macro */
+		instance = ((oreoled_macrorun_t *) arg)->instance;
+
+		/* special handling for request to set all instances rgb values */
+		if (instance == OREOLED_ALL_INSTANCES) {
+			memset(_macro, ((oreoled_macrorun_t *) arg)->macro, sizeof(_macro));
+
+		/* request to set individual instance's rgb value */
+		} else if (instance < OREOLED_NUM_LEDS) {
+			memset(_macro, ((oreoled_macrorun_t *) arg)->macro, sizeof(_macro));
+		}
+
+		/* send I2C updates */
+		send_macro();
+		return OK;
+
 	default:
 		/* see if the parent class can make any use of it */
 		ret = CDev::ioctl(filp, cmd, arg);
@@ -257,6 +279,38 @@ OREOLED::send_rgb()
 	return ret;
 }
 
+/**
+ * send latest requested macro to all oreo LEDs
+ */
+int
+OREOLED::send_macro()
+{
+	int ret = ENOTTY;
+
+	/* return immediately if not healthy */
+	if (!_overall_health) {
+		return ret;
+	}
+
+	/* for each healthy led */
+	for (uint8_t i=0; i<OREOLED_NUM_LEDS; i++) {
+		if (_healthy[i]) {
+			/* set I2C address */
+			set_address(OREOLED_BASE_I2C_ADDR+i);
+			/* prepare command */
+			uint8_t macro_num = (uint8_t)_macro[i];
+			uint8_t msg[] = {OREOLED_PATTERN_SOLID, OREOLED_PARAM_BIAS_RED, macro_num, OREOLED_PARAM_BIAS_GREEN, macro_num, OREOLED_PARAM_BIAS_BLUE, macro_num};
+			/* send I2C command */
+			if (transfer(msg, sizeof(msg), nullptr, 0) == OK) {
+				ret = OK;
+			}
+			usleep(1);
+		}
+	}
+
+	return ret;
+}
+
 int
 OREOLED::get(uint8_t instance, oreoled_pattern &pattern, uint8_t &r, uint8_t &g, uint8_t &b)
 {
@@ -275,7 +329,7 @@ OREOLED::get(uint8_t instance, oreoled_pattern &pattern, uint8_t &r, uint8_t &g,
 void
 oreoled_usage()
 {
-	warnx("missing command: try 'start', 'test', 'info', 'off', 'stop', 'rgb 30 40 50'");
+	warnx("missing command: try 'start', 'test', 'info', 'off', 'stop', 'rgb 30 40 50' 'macro 4'");
 	warnx("options:");
 	warnx("    -b i2cbus (%d)", PX4_I2C_BUS_LED);
 	warnx("    -a addr (0x%x)", OREOLED_BASE_I2C_ADDR);
@@ -434,6 +488,31 @@ oreoled_main(int argc, char *argv[])
 		uint8_t blue = strtol(argv[4], NULL, 0);
 		oreoled_rgbset_t rgb_set = {OREOLED_ALL_INSTANCES, OREOLED_PATTERN_SOLID, red, green, blue};
 		ret = ioctl(fd, OREOLED_SET_RGB, (unsigned long)&rgb_set);
+		close(fd);
+		exit(ret);
+	}
+
+	if (!strcmp(verb, "macro")) {
+		if (argc < 3) {
+			errx(1, "Usage: oreoled macro <macro_num>");
+		}
+
+		fd = open(OREOLED_DEVICE_PATH, 0);
+
+		if (fd == -1) {
+			errx(1, "Unable to open " OREOLED_DEVICE_PATH);
+		}
+
+		uint8_t macro = strtol(argv[2], NULL, 0);
+
+		/* sanity check macro number */
+		if (macro > OREOLED_PARAM_MACRO_ENUM_COUNT) {
+			errx(1, "invalid macro number %d",(int)macro);
+			exit(ret);
+		}
+
+		oreoled_macrorun_t macro_run = {OREOLED_ALL_INSTANCES, (enum oreoled_macro)macro};
+		ret = ioctl(fd, OREOLED_RUN_MACRO, (unsigned long)&macro_run);
 		close(fd);
 		exit(ret);
 	}
