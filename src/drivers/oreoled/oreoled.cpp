@@ -299,7 +299,7 @@ OREOLED::send_macro()
 			set_address(OREOLED_BASE_I2C_ADDR+i);
 			/* prepare command */
 			uint8_t macro_num = (uint8_t)_macro[i];
-			uint8_t msg[] = {OREOLED_PATTERN_SOLID, OREOLED_PARAM_BIAS_RED, macro_num, OREOLED_PARAM_BIAS_GREEN, macro_num, OREOLED_PARAM_BIAS_BLUE, macro_num};
+			uint8_t msg[] = {OREOLED_PATTERN_PARAMUPDATE, OREOLED_PARAM_MACRO, macro_num};
 			/* send I2C command */
 			if (transfer(msg, sizeof(msg), nullptr, 0) == OK) {
 				ret = OK;
