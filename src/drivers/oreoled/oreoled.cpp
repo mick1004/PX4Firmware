@@ -432,41 +432,25 @@ oreoled_main(int argc, char *argv[])
 	int fd;
 	int ret;
 
+	/* start driver */
 	if (!strcmp(verb, "start")) {
 		if (g_oreoled != nullptr) {
 			errx(1, "already started");
 		}
 
+		/* by default use LED bus */
 		if (i2cdevice == -1) {
-			// try the external bus first
-			i2cdevice = PX4_I2C_BUS_EXPANSION;
-			g_oreoled = new OREOLED(PX4_I2C_BUS_EXPANSION, i2c_addr);
-
-			if (g_oreoled != nullptr && OK != g_oreoled->init()) {
-				delete g_oreoled;
-				g_oreoled = nullptr;
-			}
-
-			if (g_oreoled == nullptr) {
-				// fall back to default bus
-				if (PX4_I2C_BUS_LED == PX4_I2C_BUS_EXPANSION) {
-					errx(1, "init failed");
-				}
-				i2cdevice = PX4_I2C_BUS_LED;
-			}
+			i2cdevice = PX4_I2C_BUS_LED;
 		}
 
-		if (g_oreoled == nullptr) {
-			g_oreoled = new OREOLED(i2cdevice, i2c_addr);
+		/* instantiate driver */
+		g_oreoled = new OREOLED(i2cdevice, i2c_addr);
 
-			if (g_oreoled == nullptr)
-				errx(1, "new failed");
-
-			if (OK != g_oreoled->init()) {
-				delete g_oreoled;
-				g_oreoled = nullptr;
-				errx(1, "init failed");
-			}
+		/* check object was created successfully */
+		if (g_oreoled != nullptr && OK != g_oreoled->init()) {
+			delete g_oreoled;
+			g_oreoled = nullptr;
+			errx(1, "failed to start driver");
 		}
 
 		exit(0);
