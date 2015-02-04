@@ -66,6 +66,8 @@
 
 #define OREOLED_NUM_LEDS		4		// maximum number of LEDs the oreo led driver can support
 #define OREOLED_BASE_I2C_ADDR	0x68	// base i2c address (7-bit)
+#define OREOLED_GENERALCALL_MS	4000	// general call sent every 4 seconds
+#define OREOLED_GENERALCALL_CMD	0x00	// general call command sent at regular intervals
 
 class OREOLED : public device::I2C
 {
@@ -77,6 +79,12 @@ public:
 	virtual int		probe();
 	virtual int		info();
 	virtual int		ioctl(struct file *filp, int cmd, unsigned long arg);
+
+	/* send general call on I2C bus to syncronise all LEDs */
+	int				send_general_call();
+
+	/* send a string of bytes to an LEDs (used for testing only) */
+	int				send_bytes(oreoled_sendbytes_t sb);
 
 private:
 	bool			_overall_health;				// overall health of sensor (true if at least one LED is responding)
@@ -311,6 +319,56 @@ OREOLED::send_macro()
 	return ret;
 }
 
+/* send general call on I2C bus to syncronise all LEDs */
+int
+OREOLED::send_general_call()
+{
+	int ret = ENOTTY;
+
+	/* return immediately if not healthy */
+	if (!_overall_health) {
+		return ret;
+	}
+
+	/* set I2C address to zero */
+	set_address(0);
+
+	/* prepare command : 0x01 = general hardware call, 0x00 = I2C address of master (but we don't act as a slave so set to zero)*/
+	uint8_t msg[] = {0x01,0x00};
+
+	/* send I2C command */
+	if (transfer(msg, sizeof(msg), nullptr, 0) == OK) {
+		ret = OK;
+	}
+
+	return ret;
+}
+
+/* send a string of bytes to an LEDs (used for testing only) */
+int
+OREOLED::send_bytes(oreoled_sendbytes_t sb)
+{
+	int ret = ENOTTY;
+
+	/* return immediately if not healthy */
+	if (!_overall_health) {
+		return ret;
+	}
+
+	/* set I2C address to zero */
+	set_address(OREOLED_BASE_I2C_ADDR+sb.led_num);
+
+	/* sanity check number of bytes */
+	if (sb.num_bytes > 20) {
+		return ret;
+	}
+
+	/* send bytes */
+	ret = transfer(sb.buff, sb.num_bytes, nullptr, 0);
+
+	return ret;
+}
+
 int
 OREOLED::get(uint8_t instance, oreoled_pattern &pattern, uint8_t &r, uint8_t &g, uint8_t &b)
 {
@@ -329,7 +387,7 @@ OREOLED::get(uint8_t instance, oreoled_pattern &pattern, uint8_t &r, uint8_t &g,
 void
 oreoled_usage()
 {
-	warnx("missing command: try 'start', 'test', 'info', 'off', 'stop', 'rgb 30 40 50' 'macro 4'");
+	warnx("missing command: try 'start', 'test', 'info', 'off', 'stop', 'rgb 30 40 50' 'macro 4' 'gencall' 'bytes <lednum> 7 9 6'");
 	warnx("options:");
 	warnx("    -b i2cbus (%d)", PX4_I2C_BUS_LED);
 	warnx("    -a addr (0x%x)", OREOLED_BASE_I2C_ADDR);
@@ -514,6 +572,57 @@ oreoled_main(int argc, char *argv[])
 		oreoled_macrorun_t macro_run = {OREOLED_ALL_INSTANCES, (enum oreoled_macro)macro};
 		ret = ioctl(fd, OREOLED_RUN_MACRO, (unsigned long)&macro_run);
 		close(fd);
+		exit(ret);
+	}
+
+	/* send general hardware call to all LEDS */
+	if (!strcmp(verb, "gencall")) {
+		ret = g_oreoled->send_general_call();
+		warnx("sent general call");
+		exit(ret);
+	}
+
+	/* send a string of bytes to an LED using send_bytes function */
+	if (!strcmp(verb, "bytes")) {
+		if (argc < 3) {
+			errx(1, "Usage: oreoled bytes <led_num> <byte1> <byte2> <byte3> ...");
+		}
+
+		// structure to be sent
+		oreoled_sendbytes_t sendb;
+
+		// maximum of 20 bytes can be sent
+		if (argc > 23) {
+			errx(1, "Max of 20 bytes can be sent");
+		}
+
+		// check led num
+		sendb.led_num = strtol(argv[2], NULL, 0);
+		if (sendb.led_num > 3) {
+			errx(1, "led number must be between 0 ~ 3");
+		}
+
+		// get bytes
+		sendb.num_bytes = argc-3;
+		uint8_t byte_count;
+		for (byte_count=0; byte_count<sendb.num_bytes; byte_count++) {
+			sendb.buff[byte_count] = strtol(argv[byte_count+3], NULL, 0);
+		}
+
+		// send bytes
+		ret = g_oreoled->send_bytes(sendb);
+		warnx("sent %d bytes 0:%x 1:%x 2:%x 3:%x 4:%x 5:%x 6:%x 7:%x",
+				(int)sendb.num_bytes,
+				(int)sendb.buff[0],
+				(int)sendb.buff[1],
+				(int)sendb.buff[2],
+				(int)sendb.buff[3],
+				(int)sendb.buff[4],
+				(int)sendb.buff[5],
+				(int)sendb.buff[6],
+				(int)sendb.buff[7]);
+
+		warnx("sent %d bytes",(int)sendb.num_bytes);
 		exit(ret);
 	}
 

@@ -128,3 +128,13 @@ typedef struct {
 	uint8_t instance;
 	oreoled_macro macro;
 } oreoled_macrorun_t;
+
+/*
+  structure passed to send_bytes method (only used for testing)
+ */
+typedef struct {
+	uint8_t led_num;
+	uint8_t num_bytes;
+	uint8_t buff[20];
+} oreoled_sendbytes_t;
+
