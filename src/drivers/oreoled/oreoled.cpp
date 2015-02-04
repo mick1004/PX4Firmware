@@ -189,11 +189,15 @@ OREOLED::info()
 
 	// print info on each LED
 	for (uint8_t i=0; i<OREOLED_NUM_LEDS; i++) {
-		ret = get(i, pattern, r, g, b);
-		if (ret == OK) {
-			log("oreo %u: pattern:%u, red:%u, green:%u, blue: %u", (unsigned)i, (unsigned)pattern, (unsigned)r, (unsigned)g, (unsigned)b);
+		if (!_healthy[i]) {
+			log("oreo %u: BAD",(int)i);
 		} else {
-			warnx("oreo %u: failed to read", (unsigned)i);
+			ret = get(i, pattern, r, g, b);
+			if (ret == OK) {
+				log("oreo %u: pattern:%u, r:%u, g:%u, b:%u", (unsigned)i, (unsigned)pattern, (unsigned)r, (unsigned)g, (unsigned)b);
+			} else {
+				warnx("oreo %u: failed to read", (unsigned)i);
+			}
 		}
 	}
 
@@ -429,8 +433,9 @@ oreoled_main(int argc, char *argv[])
 	int ret;
 
 	if (!strcmp(verb, "start")) {
-		if (g_oreoled != nullptr)
+		if (g_oreoled != nullptr) {
 			errx(1, "already started");
+		}
 
 		if (i2cdevice == -1) {
 			// try the external bus first
@@ -504,6 +509,7 @@ oreoled_main(int argc, char *argv[])
 		exit(ret);
 	}
 
+	/* display driver status */
 	if (!strcmp(verb, "info")) {
 		g_oreoled->info();
 		exit(0);
@@ -530,6 +536,7 @@ oreoled_main(int argc, char *argv[])
 		exit(ret);
 	}
 
+	/* send rgb request to all LEDS */
 	if (!strcmp(verb, "rgb")) {
 		if (argc < 5) {
 			errx(1, "Usage: oreoled rgb <red> <green> <blue>");
@@ -550,6 +557,7 @@ oreoled_main(int argc, char *argv[])
 		exit(ret);
 	}
 
+	/* send macro request to all LEDS */
 	if (!strcmp(verb, "macro")) {
 		if (argc < 3) {
 			errx(1, "Usage: oreoled macro <macro_num>");
