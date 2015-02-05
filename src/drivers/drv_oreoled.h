@@ -67,6 +67,9 @@
 /* instance of 0xff means apply to all instances */
 #define OREOLED_ALL_INSTANCES	0xff
 
+/* maximum command length that can be sent to LEDs */
+#define OREOLED_CMD_LENGTH_MAX	10
+
 /* enum passed to OREOLED_SET_MODE ioctl()*/
 enum oreoled_pattern {
 	OREOLED_PATTERN_OFF,
@@ -138,6 +141,6 @@ typedef struct {
 typedef struct {
 	uint8_t led_num;
 	uint8_t num_bytes;
-	uint8_t buff[20];
-} oreoled_sendbytes_t;
+	uint8_t buff[OREOLED_CMD_LENGTH_MAX];
+} oreoled_cmd_t;
 
