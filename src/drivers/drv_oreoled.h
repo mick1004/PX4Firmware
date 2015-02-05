@@ -58,6 +58,9 @@
 /** run macro */
 #define OREOLED_RUN_MACRO		_OREOLEDIOC(2)
 
+/** general call */
+#define OREOLED_GENERALCALL		_OREOLEDIOC(3)
+
 /* Oreo LED driver supports up to 4 leds */
 #define OREOLED_NUM_LEDS		4
 
