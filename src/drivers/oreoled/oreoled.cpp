@@ -43,6 +43,7 @@
 #include <nuttx/config.h>
 
 #include <drivers/device/i2c.h>
+#include <drivers/drv_hrt.h>
 
 #include <sys/types.h>
 #include <stdint.h>
@@ -94,6 +95,7 @@ private:
 	uint8_t			_g[OREOLED_NUM_LEDS];
 	uint8_t			_b[OREOLED_NUM_LEDS];
 	oreoled_macro   _macro[OREOLED_NUM_LEDS];
+	uint64_t		_last_gencall;
 
 	/* send latest requested rgb values to all oreo LEDs */
 	int				send_rgb();
@@ -118,7 +120,8 @@ extern "C" __EXPORT int oreoled_main(int argc, char *argv[]);
 /* constructor */
 OREOLED::OREOLED(int bus, int i2c_addr) :
 	I2C("oreoled", OREOLED_DEVICE_PATH, bus, i2c_addr, 100000),
-	_overall_health(false)
+	_overall_health(false),
+	_last_gencall(0)
 {
 	// initialise to unhealthy
 	memset(_healthy, false, sizeof(_healthy));
@@ -244,12 +247,16 @@ OREOLED::ioctl(struct file *filp, int cmd, unsigned long arg)
 
 		/* request to set individual instance's rgb value */
 		} else if (instance < OREOLED_NUM_LEDS) {
-			memset(_macro, ((oreoled_macrorun_t *) arg)->macro, sizeof(_macro));
+			_macro[instance] = ((oreoled_macrorun_t *) arg)->macro;
 		}
 
 		/* send I2C updates */
 		send_macro();
 		return OK;
+
+	case OREOLED_GENERALCALL:
+		/** general call */
+		return send_general_call();
 
 	default:
 		/* see if the parent class can make any use of it */
@@ -344,6 +351,9 @@ OREOLED::send_general_call()
 	if (transfer(msg, sizeof(msg), nullptr, 0) == OK) {
 		ret = OK;
 	}
+
+	// record time
+	_last_gencall = hrt_absolute_time();
 
 	return ret;
 }
