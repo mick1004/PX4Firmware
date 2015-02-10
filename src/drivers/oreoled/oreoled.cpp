@@ -138,7 +138,7 @@ extern "C" __EXPORT int oreoled_main(int argc, char *argv[]);
 
 /* constructor */
 OREOLED::OREOLED(int bus, int i2c_addr) :
-	I2C("oreoled", OREOLED_DEVICE_PATH, bus, i2c_addr, 400000),
+	I2C("oreoled", OREOLED_DEVICE_PATH, bus, i2c_addr, 100000),
 	_work{},
 	_num_healthy(0),
 	_cmd_queue(nullptr),
