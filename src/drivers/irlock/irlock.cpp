@@ -59,7 +59,7 @@
 
 /* Configuration Constants */
 #define IRLOCK_I2C_BUS			PX4_I2C_BUS_EXPANSION
-#define IRLOCK_I2C_ADDRESS		0x65 //* 7-bit address (non shifted)
+#define IRLOCK_I2C_ADDRESS		0x54 //* 7-bit address (non shifted)
 #define IRLOCK_CONVERSION_INTERVAL_US	20000U /* us = 20ms = 50Hz */
 
 #define IRLOCK_SYNC			0xAA55
@@ -79,6 +79,7 @@ public:
 	virtual int init();
 	virtual int probe();
 	virtual int info();
+	virtual int test();
 
 	virtual ssize_t read(struct file *filp, char *buffer, size_t buflen);
 
@@ -191,6 +192,45 @@ int IRLOCK::info()
 		_reports->print_info("report queue: ");
 	} else {
 		warnx("sensor is not healthy");
+	}
+
+	return OK;
+}
+
+/* test driver */
+int IRLOCK::test()
+{
+	/* exit immediately if driver not running */
+	if (g_irlock == nullptr) {
+		errx(1, "irlock device driver is not running");
+	}
+
+	/* exit immediately if sensor is not healty */
+	if (!_sensor_ok) {
+		errx(1, "sensor is not healthy");
+	}
+
+	/* instructions to user */
+	warnx("searching for object for 10 seconds");
+
+	/* read from sensor for 10 seconds */
+	struct irlock_s obj_report;
+	uint64_t start_time = hrt_absolute_time();
+	while ((hrt_absolute_time() - start_time) < 10000000) {
+
+		/* output all objects found */
+		while (_reports->count() > 0) {
+			_reports->get(&obj_report);
+			warnx("sig:%d x:%d y:%d width:%d height:%d",
+					(int)obj_report.signature,
+					(int)obj_report.center_x,
+					(int)obj_report.center_y,
+					(int)obj_report.width,
+					(int)obj_report.height);
+		}
+
+		/* sleep for 0.05 seconds */
+		usleep(50000);
 	}
 
 	return OK;
@@ -338,7 +378,7 @@ int IRLOCK::read_device_block(struct irlock_s *block)
 
 void irlock_usage()
 {
-	warnx("missing command: try 'start', 'stop', 'info'");
+	warnx("missing command: try 'start', 'stop', 'info', 'test'");
 	warnx("options:");
 	warnx("    -b i2cbus (%d)", IRLOCK_I2C_BUS);
 }
@@ -396,12 +436,19 @@ int irlock_main(int argc, char *argv[])
 		g_irlock = nullptr;
 		delete tmp_irlock;
 		warnx("irlock stopped");
-		exit(0);
+		exit(OK);
 	}
 
 	/* Print driver information */
 	if (!strcmp(command, "info")) {
 		g_irlock->info();
+		exit(OK);
+	}
+
+	/* test driver */
+	if (!strcmp(command, "test")) {
+		g_irlock->test();
+		exit(OK);
 	}
 
 	/* display usage info */
