@@ -150,7 +150,7 @@ int IRLOCK::init()
 	}
 
 	/* allocate buffer storing values read from sensor */
-	_reports = new RingBuffer(135, sizeof(struct irlock_s));
+	_reports = new RingBuffer(IRLOCK_OBJECTS_MAX, sizeof(struct irlock_s));
 
 	if (_reports == nullptr) {
 		return ENOTTY;
@@ -328,8 +328,9 @@ int IRLOCK::read_device()
 
 	// now read blocks until sync stops, first flush stale queue data
 	_reports->flush();
+	int num_objects = 0;
 
-	while (sync_device()) {
+	while (sync_device() && (num_objects < IRLOCK_OBJECTS_MAX)) {
 		struct irlock_s block;
 
 		if (read_device_block(&block) != OK) {

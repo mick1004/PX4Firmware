@@ -47,6 +47,8 @@
 #define IRLOCK_BASE_DEVICE_PATH	"/dev/irlock"
 #define IRLOCK0_DEVICE_PATH	"/dev/irlock0"
 
+#define IRLOCK_OBJECTS_MAX	5	/* up to 5 objects can be detected/reported */
+
 /* irlock_s structure returned from read calls */
 struct irlock_s {
 	uint64_t timestamp; // microseconds since system start
