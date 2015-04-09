@@ -116,6 +116,11 @@ public:
 	virtual int		init();
 
 	/**
+	 * ioctl for retrieving battery capacity and time to empty
+	 */
+	virtual int     ioctl(struct file *filp, int cmd, unsigned long arg);
+
+	/**
 	 * Test device
 	 *
 	 * @return 0 on success, error code on failure
@@ -251,6 +256,29 @@ BATT_SMBUS::init()
 }
 
 int
+BATT_SMBUS::ioctl(struct file *filp, int cmd, unsigned long arg)
+{
+    int ret = -ENODEV;
+
+    switch (cmd) {
+    case BATT_SMBUS_GET_CAPACITY:
+        /* return battery capacity as uint16 */
+        if (_enabled) {
+            *((uint16_t *)arg) = _batt_design_capacity;
+            ret = OK;
+        }
+        break;
+
+    default:
+        /* see if the parent class can make any use of it */
+        ret = CDev::ioctl(filp, cmd, arg);
+        break;
+    }
+
+    return ret;
+}
+
+int
 BATT_SMBUS::test()
 {
 	int sub = orb_subscribe(ORB_ID(battery_status));
@@ -266,7 +294,7 @@ BATT_SMBUS::test()
 
 		if (updated) {
 			if (orb_copy(ORB_ID(battery_status), sub, &status) == OK) {
-				warnx("V=%4.2f C=%4.2f DismAh=%4.2f", (float)status.voltage_v, (float)status.current_a, (float)status.discharged_mah);
+				warnx("V=%4.2f C=%4.2f DismAh=%4.2f Cap:%d", (float)status.voltage_v, (float)status.current_a, (float)status.discharged_mah, (int)_batt_design_capacity);
 			}
 		}
 
