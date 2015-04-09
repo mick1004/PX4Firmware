@@ -85,6 +85,7 @@
 #define BATT_SMBUS_TEMP				0x08	///< temperature register
 #define BATT_SMBUS_VOLTAGE			0x09	///< voltage register
 #define BATT_SMBUS_REMAINING_CAPACITY	0x0f	///< predicted remaining battery capacity as a percentage
+#define BATT_SMBUS_AVG_TIME_TO_EMPTY    0x12    ///< one minute rolling average time remaining until empty
 #define BATT_SMBUS_DESIGN_CAPACITY		0x18	///< design capacity register
 #define BATT_SMBUS_DESIGN_VOLTAGE		0x19	///< design voltage register
 #define BATT_SMBUS_SERIALNUM			0x1c	///< serial number register
@@ -114,6 +115,11 @@ public:
 	 * @return 0 on success, error code on failure
 	 */
 	virtual int		init();
+
+	/**
+	 * ioctl for retrieving battery capacity and time to empty
+	 */
+	virtual int     ioctl(struct file *filp, int cmd, unsigned long arg);
 
 	/**
 	 * Test device
@@ -181,6 +187,8 @@ private:
 	orb_id_t		_batt_orb_id;	///< uORB battery topic ID
 	uint64_t		_start_time;	///< system time we first attempt to communicate with battery
 	uint16_t		_batt_design_capacity;	///< battery's design capacity in mAh (0 means unknown)
+	uint8_t         _read_counter;  ///< counter used to slow time_remaining calls
+	uint16_t        _time_remaining;    ///< estimated time remaining in minutes
 };
 
 namespace
@@ -200,7 +208,9 @@ BATT_SMBUS::BATT_SMBUS(int bus, uint16_t batt_smbus_addr) :
 	_batt_topic(-1),
 	_batt_orb_id(nullptr),
 	_start_time(0),
-	_batt_design_capacity(0)
+	_batt_design_capacity(0),
+	_read_counter(0),
+	_time_remaining(0)
 {
 	// work_cancel in the dtor will explode if we don't do this...
 	memset(&_work, 0, sizeof(_work));
@@ -248,6 +258,37 @@ BATT_SMBUS::init()
 	_batt_orb_id = ORB_ID(battery_status);
 
 	return ret;
+}
+
+int
+BATT_SMBUS::ioctl(struct file *filp, int cmd, unsigned long arg)
+{
+    int ret = -ENODEV;
+
+    switch (cmd) {
+    case BATT_SMBUS_GET_CAPACITY:
+        /* return battery capacity as uint16 */
+        if (_enabled) {
+            *((uint16_t *)arg) = _batt_design_capacity;
+            ret = OK;
+        }
+        break;
+
+    case BATT_SMBUS_GET_TIME_REMAINING:
+        /* return time remaining as uint16 */
+        if (_enabled) {
+            *((uint16_t *)arg) = _time_remaining;
+            ret = OK;
+        }
+        break;
+
+    default:
+        /* see if the parent class can make any use of it */
+        ret = CDev::ioctl(filp, cmd, arg);
+        break;
+    }
+
+    return ret;
 }
 
 int
@@ -391,6 +432,15 @@ BATT_SMBUS::cycle()
 					new_report.discharged_mah = _batt_design_capacity - tmp;
 				}
 			}
+		}
+
+		// read time remaining
+		_read_counter++;
+		if (_read_counter > 10) {
+		    _read_counter = 0;
+		    if (read_reg(BATT_SMBUS_AVG_TIME_TO_EMPTY, tmp) == OK) {
+                _time_remaining = tmp;
+            }
 		}
 
 		// publish to orb
